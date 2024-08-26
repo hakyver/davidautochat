@@ -8,3 +8,4 @@ dj-database-url
 whitenoise[brotli]
 gunicorn 
 uvicorn
+python-dotenv
