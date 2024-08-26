@@ -1,0 +1,10 @@
+django
+requests
+openai
+python-decouple
+psycopg2-binary
+pyngrok
+dj-database-url
+whitenoise[brotli]
+gunicorn 
+uvicorn
