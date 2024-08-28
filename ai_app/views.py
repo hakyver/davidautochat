@@ -1,7 +1,7 @@
 # views.py
 import json
 import requests
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from decouple import config
 from .utils import get_history_parse, handle_history, get_current_date, generate_timer, get_current_calendar
@@ -119,40 +119,66 @@ def flow_confirm(request):
     response = "Confirmando tu cita... Por favor, espera un momento."
     return JsonResponse({"response": response})
 
+VERIFY_TOKEN = config('VERIFY_TOKEN')
+
 @csrf_exempt
 def handle_intent(request):
-    if request.method == 'POST':
+    if request.method == 'GET':
+        # Verificación del Webhook
+        token_sent = request.GET.get('hub.verify_token')
+        if token_sent == VERIFY_TOKEN:
+            return HttpResponse(request.GET.get('hub.challenge'))
+        return HttpResponse('Token de verificación incorrecto', status=403)
+
+    elif request.method == 'POST':
         try:
-            state = request.session.get('state', {})
-            ai = AIService(api_key='YOUR_OPENAI_API_KEY', model='gpt-3.5-turbo-16k')
-            history = get_history_parse(state)
-            prompt = f"""
-            Como una inteligencia artificial avanzada, tu tarea es analizar el contexto de una conversación y determinar cuál de las siguientes acciones es más apropiada para realizar:
-            --------------------------------------------------------
-            Historial de conversación:
-            {history}
-            
-            Posibles acciones a realizar:
-            1. AGENDAR: Esta acción se debe realizar cuando el cliente expresa su deseo de programar una cita.
-            2. HABLAR: Esta acción se debe realizar cuando el cliente desea hacer una pregunta o necesita más información.
-            3. CONFIRMAR: Esta acción se debe realizar cuando el cliente y el vendedor llegaron a un acuerdo mutuo proporcionando una fecha, día y hora exacta sin conflictos de hora.
-            -----------------------------
-            Tu objetivo es comprender la intención del cliente y seleccionar la acción más adecuada en respuesta a su declaración.
-            
-            Respuesta ideal (AGENDAR|HABLAR|CONFIRMAR):"""
+            # Procesar el mensaje recibido
+            data = json.loads(request.body)
+            if 'entry' in data and data['entry'][0]['changes'][0]['value']:
+                message_data = data['entry'][0]['changes'][0]['value']['messages'][0]
+                message_text = message_data['text']['body']  # El texto del mensaje enviado por el usuario
+                sender_id = message_data['from']  # El número de WhatsApp del usuario
+                
+                # Manejo de la conversación
+                state = request.session.get('state', {})
+                ai = AIService(api_key='YOUR_OPENAI_API_KEY', model='gpt-3.5-turbo-16k')
+                history = get_history_parse(state)
+                
+                prompt = f"""
+                Como una inteligencia artificial avanzada, tu tarea es analizar el contexto de una conversación y determinar cuál de las siguientes acciones es más apropiada para realizar:
+                --------------------------------------------------------
+                Historial de conversación:
+                {history}
+                
+                Posibles acciones a realizar:
+                1. AGENDAR: Esta acción se debe realizar cuando el cliente expresa su deseo de programar una cita.
+                2. HABLAR: Esta acción se debe realizar cuando el cliente desea hacer una pregunta o necesita más información.
+                3. CONFIRMAR: Esta acción se debe realizar cuando el cliente y el vendedor llegaron a un acuerdo mutuo proporcionando una fecha, día y hora exacta sin conflictos de hora.
+                -----------------------------
+                Tu objetivo es comprender la intención del cliente y seleccionar la acción más adecuada en respuesta a su declaración.
+                
+                Respuesta ideal (AGENDAR|HABLAR|CONFIRMAR):"""
 
-            text = ai.create_chat([
-                {'role': 'system', 'content': prompt}
-            ], 'gpt-4')
+                text = ai.create_chat([
+                    {'role': 'system', 'content': prompt},
+                    {'role': 'user', 'content': f"Cliente pregunta: {message_text}"}
+                ], 'gpt-4')
 
-            if 'HABLAR' in text:
-                return flow_seller(request)
-            elif 'AGENDAR' in text:
-                return flow_schedule(request)
-            elif 'CONFIRMAR' in text:
-                return flow_confirm(request)
+                # Determinar la acción a tomar
+                if 'HABLAR' in text:
+                    response = flow_seller(request)
+                elif 'AGENDAR' in text:
+                    response = flow_schedule(request)
+                elif 'CONFIRMAR' in text:
+                    response = flow_confirm(request)
+                else:
+                    response = JsonResponse({"error": "No se pudo determinar la acción adecuada."})
+
+                return response
             else:
-                return JsonResponse({"error": "No se pudo determinar la acción adecuada."})
+                return JsonResponse({"error": "Mensaje no válido"}, status=400)
         except Exception as err:
             return JsonResponse({"error": str(err)}, status=500)
+
     return JsonResponse({"error": "Solicitud inválida"}, status=400)
+
